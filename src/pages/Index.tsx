@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Phone, Settings, Shield, PhoneOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -8,6 +7,7 @@ import { toast } from '@/hooks/use-toast';
 import AdminPanel from '@/components/AdminPanel';
 import ContactCard from '@/components/ContactCard';
 import EmergencyButton from '@/components/EmergencyButton';
+import { supabase } from '@/integrations/supabase/client';
 
 interface Contact {
   id: string;
@@ -17,17 +17,63 @@ interface Contact {
 }
 
 const Index = () => {
-  const [contacts, setContacts] = useState<Contact[]>([
-    { id: '1', name: 'Mom', phone: '+1234567890' },
-    { id: '2', name: 'Dad', phone: '+1234567891' },
-    { id: '3', name: 'Grandma', phone: '+1234567892' },
-    { id: '911', name: 'Emergency', phone: '911', isEmergency: true },
-  ]);
-  
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showAdmin, setShowAdmin] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentCall, setCurrentCall] = useState<Contact | null>(null);
+
+  // Load contacts from Supabase
+  const loadContacts = async () => {
+    try {
+      console.log('Loading contacts from Supabase...');
+      const { data, error } = await supabase
+        .from('contacts')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Error loading contacts:', error);
+        toast({
+          title: "Error loading contacts",
+          description: error.message,
+          variant: "destructive"
+        });
+        // Fallback to default contacts if database fails
+        setContacts([
+          { id: '1', name: 'Mom', phone: '+1234567890' },
+          { id: '2', name: 'Dad', phone: '+1234567891' },
+          { id: '3', name: 'Grandma', phone: '+1234567892' },
+          { id: '911', name: 'Emergency', phone: '911', isEmergency: true },
+        ]);
+      } else {
+        console.log('Loaded contacts from database:', data);
+        const formattedContacts = data.map(contact => ({
+          id: contact.id,
+          name: contact.name,
+          phone: contact.phone,
+          isEmergency: contact.is_emergency || false
+        }));
+        setContacts(formattedContacts);
+      }
+    } catch (error) {
+      console.error('Exception loading contacts:', error);
+      // Fallback to default contacts
+      setContacts([
+        { id: '1', name: 'Mom', phone: '+1234567890' },
+        { id: '2', name: 'Dad', phone: '+1234567891' },
+        { id: '3', name: 'Grandma', phone: '+1234567892' },
+        { id: '911', name: 'Emergency', phone: '911', isEmergency: true },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadContacts();
+  }, []);
 
   const handleCall = (contact: Contact) => {
     console.log(`Attempting to call ${contact.name} at ${contact.phone}`);
@@ -52,25 +98,93 @@ const Index = () => {
     });
   };
 
-  const addContact = (name: string, phone: string) => {
-    const newContact: Contact = {
-      id: Date.now().toString(),
-      name,
-      phone
-    };
-    setContacts(prev => [...prev, newContact]);
-    toast({
-      title: "Contact added",
-      description: `${name} has been added to safe contacts`,
-    });
+  const addContact = async (name: string, phone: string) => {
+    try {
+      console.log('Adding contact to database:', { name, phone });
+      const { data, error } = await supabase
+        .from('contacts')
+        .insert([
+          { name, phone, is_emergency: false }
+        ])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error adding contact:', error);
+        toast({
+          title: "Error adding contact",
+          description: error.message,
+          variant: "destructive"
+        });
+        return;
+      }
+
+      console.log('Contact added successfully:', data);
+      const newContact: Contact = {
+        id: data.id,
+        name: data.name,
+        phone: data.phone,
+        isEmergency: data.is_emergency || false
+      };
+      
+      setContacts(prev => [...prev, newContact]);
+      toast({
+        title: "Contact added",
+        description: `${name} has been added to safe contacts`,
+      });
+    } catch (error) {
+      console.error('Exception adding contact:', error);
+      toast({
+        title: "Error adding contact",
+        description: "Please try again",
+        variant: "destructive"
+      });
+    }
   };
 
-  const removeContact = (id: string) => {
-    setContacts(prev => prev.filter(contact => contact.id !== id && !contact.isEmergency));
-    toast({
-      title: "Contact removed",
-      description: "Contact has been removed from safe list",
-    });
+  const removeContact = async (id: string) => {
+    // Don't allow removing emergency contacts
+    const contactToRemove = contacts.find(c => c.id === id);
+    if (contactToRemove?.isEmergency) {
+      toast({
+        title: "Cannot remove emergency contact",
+        description: "Emergency contacts cannot be deleted",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      console.log('Removing contact from database:', id);
+      const { error } = await supabase
+        .from('contacts')
+        .delete()
+        .eq('id', id);
+
+      if (error) {
+        console.error('Error removing contact:', error);
+        toast({
+          title: "Error removing contact",
+          description: error.message,
+          variant: "destructive"
+        });
+        return;
+      }
+
+      console.log('Contact removed successfully');
+      setContacts(prev => prev.filter(contact => contact.id !== id));
+      toast({
+        title: "Contact removed",
+        description: "Contact has been removed from safe list",
+      });
+    } catch (error) {
+      console.error('Exception removing contact:', error);
+      toast({
+        title: "Error removing contact",
+        description: "Please try again",
+        variant: "destructive"
+      });
+    }
   };
 
   const authenticateAdmin = (password: string) => {
@@ -90,6 +204,17 @@ const Index = () => {
       });
     }
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-kid-blue to-kid-purple flex items-center justify-center">
+        <Card className="p-8 text-center bg-white/95 backdrop-blur-sm shadow-2xl">
+          <Shield className="mx-auto mb-4 text-kid-green animate-spin" size={48} />
+          <h2 className="text-xl font-bold text-gray-800">Loading Safe Caller...</h2>
+        </Card>
+      </div>
+    );
+  }
 
   if (currentCall) {
     return (
